@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D&D 5e Probability Visualizer</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #e0e0e0;
+            --panel-bg: #2d2d2d;
+            --accent: #6366f1;
+            --danger: #ef4444;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+
+        h1 { margin-top: 0; font-size: 1.5rem; }
+        .container { display: flex; gap: 20px; flex: 1; overflow: hidden; }
+        
+        /* Sidebar Controls */
+        .controls {
+            flex: 0 0 300px;
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 8px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 0.85rem; font-weight: bold; color: #aaa; }
+        
+        input, select {
+            background: #404040;
+            border: 1px solid #555;
+            color: white;
+            padding: 0 8px; /* Adjusted padding for vertical alignment */
+            border-radius: 4px;
+            height: 36px;   /* Enforce consistent height */
+            box-sizing: border-box;
+        }
+
+        button {
+            cursor: pointer;
+            padding: 10px;
+            border-radius: 4px;
+            border: none;
+            font-weight: bold;
+            transition: opacity 0.2s;
+        }
+        
+        .btn-add { background-color: var(--accent); color: white; margin-top: 10px; }
+        .btn-remove { background-color: var(--danger); color: white; padding: 0 10px; height: 36px; font-size: 0.8rem;}
+        button:hover { opacity: 0.9; }
+
+        /* Character Cards */
+        .char-list { display: flex; flex-direction: column; gap: 10px; }
+        .char-card {
+            background: #383838;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #888;
+        }
+        .char-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;}
+        .char-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        
+        .char-inputs input, .char-inputs select {
+            width: 100%;
+        }
+
+        /* Chart Area */
+        .chart-container {
+            flex: 1;
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* Prevents container from expanding beyond screen */
+        }
+
+        .chart-wrapper {
+            flex: 1;
+            position: relative;
+            min-height: 0; /* Crucial for allowing flex item to shrink */
+            width: 100%;
+        }
+
+        .stats-footer {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid #444;
+            font-size: 0.95rem;
+            color: #bbb;
+            text-align: center;
+            flex-shrink: 0; /* Prevent footer from squishing */
+        }
+    </style>
+</head>
+<body>
+
+    <h1>D&D 5e Probability Visualizer</h1>
+
+    <div class="container">
+        <!-- Left Panel: Controls -->
+        <div class="controls">
+            
+            <div class="control-group">
+                <label>Interaction Type</label>
+                <select id="modeSelect" onchange="updateAll()">
+                    <option value="attack">Attack Roll (vs AC)</option>
+                    <option value="save">Saving Throw (vs DC)</option>
+                    <option value="check">Ability Check (vs DC)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>Target Number (AC or DC)</label>
+                <input type="number" id="targetNum" value="15" min="1" max="30" oninput="updateAll()">
+            </div>
+
+            <div class="control-group">
+                <label>Graph Analysis Type</label>
+                <select id="graphType" onchange="updateAll()">
+                    <option value="survival">Consecutive Successes (Survival Streak)</option>
+                    <option value="inevitability">Cumulative Probability (At least 1 Success)</option>
+                </select>
+                <small style="font-size: 0.7rem; color: #888; margin-top: 5px; line-height: 1.2;" id="graphDesc">
+                    Chance to succeed every single round.
+                </small>
+            </div>
+
+            <hr style="width: 100%; border: 0; border-top: 1px solid #555;">
+
+            <label>Characters</label>
+            <div id="charList" class="char-list">
+                <!-- Character cards go here -->
+            </div>
+            
+            <button class="btn-add" onclick="addCharacter()">+ Add Character</button>
+        </div>
+
+        <!-- Right Panel: Chart -->
+        <div class="chart-container">
+            <div class="chart-wrapper">
+                <canvas id="probabilityChart"></canvas>
+            </div>
+            <div id="statsText" class="stats-footer"></div>
+        </div>
+    </div>
+
+    <script>
+        // --- State Management ---
+        const colors = [
+            '#6366f1', // Indigo
+            '#ef4444', // Red
+            '#22c55e', // Green
+            '#eab308', // Yellow
+            '#ec4899', // Pink
+            '#06b6d4', // Cyan
+        ];
+
+        let characters = [
+            { id: 1, name: "Bob Barbarian", mod: 5, adv: "normal" },
+            { id: 2, name: "Ruby Rogue", mod: 8, adv: "advantage" }
+        ];
+
+        let chartInstance = null;
+
+        // --- Core Math Logic ---
+        function calculateSingleRollProbability(target, modifier, mode, advState) {
+            // 1. Determine base roll needed
+            let needed = target - modifier;
+            
+            // 2. Calculate raw probability (linear)
+            // Formula: (21 - needed) / 20
+            let p = (21 - needed) / 20;
+
+            // 3. Apply Caps based on Rules (Crit Fails/Successes)
+            if (mode === 'attack') {
+                // Attacks always miss on 1 (max 95%) and hit on 20 (min 5%)
+                if (p > 0.95) p = 0.95;
+                if (p < 0.05) p = 0.05;
+            } else {
+                // Saves/Checks can be 0% or 100%
+                if (p > 1.0) p = 1.0;
+                if (p < 0.0) p = 0.0;
+            }
+
+            // 4. Apply Advantage / Disadvantage
+            if (advState === 'advantage') {
+                // P(Success_Adv) = 1 - (P(Fail_Normal))^2
+                p = 1 - Math.pow(1 - p, 2);
+            } else if (advState === 'disadvantage') {
+                // P(Success_Dis) = p^2
+                p = Math.pow(p, 2);
+            }
+
+            return p;
+        }
+
+        // --- Chart Logic ---
+        function updateAll() {
+            renderCharList();
+            updateGraphDescription();
+            drawChart();
+        }
+
+        function updateGraphDescription() {
+            const type = document.getElementById('graphType').value;
+            const el = document.getElementById('graphDesc');
+            if (type === 'survival') {
+                el.innerText = "Visualizes the chance of succeeding continuously for X rounds (e.g. Not Dying, Holding Concentration).";
+            } else {
+                el.innerText = "Visualizes the chance of succeeding AT LEAST ONCE by round X (e.g. Landing a Hit, Escaping Grapple).";
+            }
+        }
+
+        function drawChart() {
+            const ctx = document.getElementById('probabilityChart').getContext('2d');
+            const target = parseInt(document.getElementById('targetNum').value) || 10;
+            const mode = document.getElementById('modeSelect').value;
+            const graphType = document.getElementById('graphType').value;
+            
+            const rounds = Array.from({length: 10}, (_, i) => i + 1); // 1 to 10 rounds
+
+            const datasets = characters.map((char, index) => {
+                const singleRollProb = calculateSingleRollProbability(target, char.mod, mode, char.adv);
+                
+                const dataPoints = rounds.map(round => {
+                    if (graphType === 'survival') {
+                        // P(Success)^Round
+                        return (Math.pow(singleRollProb, round) * 100).toFixed(1);
+                    } else {
+                        // 1 - P(Fail)^Round
+                        const failProb = 1 - singleRollProb;
+                        return ((1 - Math.pow(failProb, round)) * 100).toFixed(1);
+                    }
+                });
+
+                const color = colors[index % colors.length];
+                return {
+                    label: `${char.name} (${singleRollProb < 0.01 ? 0 : (singleRollProb*100).toFixed(0)}%/rnd)`,
+                    data: dataPoints,
+                    borderColor: color,
+                    backgroundColor: color,
+                    tension: 0.3,
+                    pointRadius: 4
+                };
+            });
+
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: rounds.map(r => `Round ${r}`),
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: { display: true, text: 'Probability (%)', color: '#aaa' },
+                            grid: { color: '#444' },
+                            ticks: { color: '#ccc' }
+                        },
+                        x: {
+                            grid: { color: '#444' },
+                            ticks: { color: '#ccc' }
+                        }
+                    },
+                    plugins: {
+                        legend: { labels: { color: '#fff' } },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label.split('(')[0]}: ${context.raw}%`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Update footer stats
+            const firstChar = characters[0];
+            if (firstChar) {
+                const p = calculateSingleRollProbability(target, firstChar.mod, mode, firstChar.adv);
+                document.getElementById('statsText').innerHTML = 
+                    `Example: <strong>${firstChar.name}</strong> needs a roll of <strong>${target - firstChar.mod}</strong>. <br> 
+                     Base chance: <strong>${(p*100).toFixed(1)}%</strong>. 
+                     ${graphType === 'survival' ? 
+                        `By round 3, chance to hold out is <strong>${(Math.pow(p, 3)*100).toFixed(1)}%</strong>.` : 
+                        `By round 3, chance to have succeeded at least once is <strong>${((1 - Math.pow(1-p, 3))*100).toFixed(1)}%</strong>.`}`;
+            } else {
+                document.getElementById('statsText').innerHTML = "Add a character to see stats.";
+            }
+        }
+
+        // --- UI Handling ---
+        function renderCharList() {
+            const container = document.getElementById('charList');
+            container.innerHTML = '';
+
+            characters.forEach((char, index) => {
+                const color = colors[index % colors.length];
+                const card = document.createElement('div');
+                card.className = 'char-card';
+                card.style.borderLeftColor = color;
+                
+                card.innerHTML = `
+                    <div class="char-header">
+                        <input type="text" value="${char.name}" onchange="updateChar(${index}, 'name', this.value)" style="width: 60%; font-weight:bold;">
+                        <button class="btn-remove" onclick="removeChar(${index})">X</button>
+                    </div>
+                    <div class="char-inputs">
+                        <div>
+                            <label>Mod</label>
+                            <input type="number" value="${char.mod}" onchange="updateChar(${index}, 'mod', this.value)">
+                        </div>
+                        <div>
+                            <label>Roll Type</label>
+                            <select onchange="updateChar(${index}, 'adv', this.value)">
+                                <option value="normal" ${char.adv === 'normal' ? 'selected' : ''}>Normal</option>
+                                <option value="advantage" ${char.adv === 'advantage' ? 'selected' : ''}>Advantage</option>
+                                <option value="disadvantage" ${char.adv === 'disadvantage' ? 'selected' : ''}>Disadv.</option>
+                            </select>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function addCharacter() {
+            characters.push({
+                id: Date.now(),
+                name: "New Char",
+                mod: 0,
+                adv: "normal"
+            });
+            updateAll();
+        }
+
+        function removeChar(index) {
+            characters.splice(index, 1);
+            updateAll();
+        }
+
+        function updateChar(index, field, value) {
+            if (field === 'mod') value = parseInt(value);
+            characters[index][field] = value;
+            drawChart();
+        }
+
+        // Init
+        updateAll();
+
+    </script>
+</body>
+</html>
